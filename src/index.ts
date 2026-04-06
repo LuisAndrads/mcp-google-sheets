@@ -1,6 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -9,7 +9,6 @@ import { google, sheets_v4 } from "googleapis";
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
-import { randomUUID } from "crypto";
 import express from "express";
 import cors from "cors";
 
@@ -491,47 +490,26 @@ async function startHttp() {
     res.json({ status: "ok", server: "mcp-google-sheets" });
   });
 
-  // Streamable HTTP — stateful sessions
-  const transports: Record<string, StreamableHTTPServerTransport> = {};
+  // SSE transport — compatible with Claude.ai
+  const sseTransports: Record<string, SSEServerTransport> = {};
 
-  app.post("/mcp", async (req, res) => {
-    // New session if no session ID in header
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    let transport = sessionId ? transports[sessionId] : undefined;
-
-    if (!transport) {
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-      await server.connect(transport);
-      transport.onclose = () => {
-        if (transport!.sessionId) delete transports[transport!.sessionId];
-      };
-    }
-
-    await transport.handleRequest(req, res, req.body);
-
-    // Store after connect so sessionId is set
-    if (transport.sessionId) transports[transport.sessionId] = transport;
+  app.get("/sse", async (_req, res) => {
+    const transport = new SSEServerTransport("/messages", res);
+    sseTransports[transport.sessionId] = transport;
+    res.on("close", () => delete sseTransports[transport.sessionId]);
+    await server.connect(transport);
   });
 
-  app.get("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const transport = sessionId ? transports[sessionId] : undefined;
+  app.post("/messages", async (req, res) => {
+    const sessionId = req.query.sessionId as string;
+    const transport = sseTransports[sessionId];
     if (!transport) { res.status(404).json({ error: "Session not found" }); return; }
-    await transport.handleRequest(req, res);
-  });
-
-  app.delete("/mcp", async (req, res) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const transport = sessionId ? transports[sessionId] : undefined;
-    if (!transport) { res.status(404).json({ error: "Session not found" }); return; }
-    await transport.handleRequest(req, res);
+    await transport.handlePostMessage(req, res);
   });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.error(`Google Sheets MCP Server running on HTTP port ${PORT}`);
-    console.error(`MCP endpoint: http://localhost:${PORT}/mcp`);
+    console.error(`SSE endpoint: http://localhost:${PORT}/sse`);
   });
 }
 
