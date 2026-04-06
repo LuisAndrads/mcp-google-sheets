@@ -486,20 +486,6 @@ async function startHttp() {
   app.use(express.json());
 
   const PORT = parseInt(process.env.PORT ?? "3000", 10);
-  const API_KEY = process.env.MCP_API_KEY;
-
-  // Optional bearer token auth
-  app.use((req, res, next) => {
-    if (req.path === "/health") return next();
-    if (API_KEY) {
-      const auth = req.headers.authorization ?? "";
-      if (auth !== `Bearer ${API_KEY}`) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-    }
-    next();
-  });
 
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", server: "mcp-google-sheets" });
