@@ -1,6 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "crypto";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -486,7 +488,7 @@ async function startStdio() {
 
 async function startHttp() {
   const app = express();
-  app.use(cors());
+  app.use(cors({ exposedHeaders: ["mcp-session-id"] }));
   app.use(express.json());
 
   const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -495,17 +497,39 @@ async function startHttp() {
     res.json({ status: "ok", server: "mcp-google-sheets" });
   });
 
-  // SSE transport — compatible with Claude.ai
-  const sseTransports: Record<string, SSEServerTransport> = {};
+  // Streamable HTTP — stateful sessions, works on Railway
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
+  async function handleMcp(req: express.Request, res: express.Response) {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport = sessionId ? transports.get(sessionId) : undefined;
+
+    if (!transport) {
+      const newId = randomUUID();
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => newId,
+      });
+      const srv = createServer();
+      await srv.connect(transport);
+      transport.onclose = () => transports.delete(newId);
+      transports.set(newId, transport);
+    }
+
+    await transport.handleRequest(req, res, req.body);
+  }
+
+  app.post("/mcp", handleMcp);
+  app.get("/mcp", handleMcp);
+  app.delete("/mcp", handleMcp);
+
+  // SSE fallback (kept for local Claude Code compatibility)
+  const sseTransports: Record<string, SSEServerTransport> = {};
   app.get("/sse", async (_req, res) => {
     const transport = new SSEServerTransport("/messages", res);
     sseTransports[transport.sessionId] = transport;
     res.on("close", () => delete sseTransports[transport.sessionId]);
-    const server = createServer();
-    await server.connect(transport);
+    await createServer().connect(transport);
   });
-
   app.post("/messages", async (req, res) => {
     const sessionId = req.query.sessionId as string;
     const transport = sseTransports[sessionId];
@@ -515,7 +539,6 @@ async function startHttp() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.error(`Google Sheets MCP Server running on HTTP port ${PORT}`);
-    console.error(`SSE endpoint: http://localhost:${PORT}/sse`);
   });
 }
 
