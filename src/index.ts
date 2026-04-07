@@ -275,14 +275,15 @@ async function sheetsRenameSheet(args: z.infer<typeof RenameSheetSchema>) {
   return `Sheet renamed to "${args.new_name}".`;
 }
 
-// ── MCP Server ────────────────────────────────────────────────────────────────
+// ── MCP Server factory (one per connection) ───────────────────────────────────
 
-const server = new Server(
-  { name: "mcp-google-sheets", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
+function createServer() {
+  const server = new Server(
+    { name: "mcp-google-sheets", version: "1.0.0" },
+    { capabilities: { tools: {} } }
+  );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "sheets_read",
@@ -471,9 +472,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+  return server;
+}
+
 // ── Transport: stdio (Claude Code) or HTTP/SSE (Claude.ai web) ───────────────
 
 async function startStdio() {
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Google Sheets MCP Server running on stdio");
@@ -497,6 +502,7 @@ async function startHttp() {
     const transport = new SSEServerTransport("/messages", res);
     sseTransports[transport.sessionId] = transport;
     res.on("close", () => delete sseTransports[transport.sessionId]);
+    const server = createServer();
     await server.connect(transport);
   });
 
